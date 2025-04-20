@@ -18,7 +18,7 @@ def carregar_dados():
             'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
         ]
 
-        file_path = "Dados/Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
+        file_path = "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
 
         if not os.path.exists(file_path):
             print(f"\nERRO: Arquivo não encontrado: {file_path}")
