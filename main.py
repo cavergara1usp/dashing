@@ -191,7 +191,7 @@ def criar_card_estatistica(titulo, valor, cor="primary"):
 def criar_layout():
     return dbc.Container([
         dcc.Store(id='dados-store'),
-        dcc.Interval(id='interval-trigger', interval=1000, max_intervals=1),  # Dispara o carregamento inicial
+        dcc.Interval(id='interval-trigger', interval=1000, max_intervals=1),
         dcc.Download(id="download-data"),
 
         dcc.Loading(
@@ -211,6 +211,7 @@ def criar_layout():
                     ], width=12)
                 ]),
 
+                # Controles de Filtro
                 dbc.Row([
                     dbc.Col([
                         html.Label("Selecione o Tipo de Crime:", className="fw-bold mb-2"),
@@ -236,6 +237,7 @@ def criar_layout():
                     ], md=6)
                 ], className="mb-4"),
 
+                # Botão de Exportação
                 dbc.Row(
                     dbc.Col(
                         dbc.Button(
@@ -250,6 +252,7 @@ def criar_layout():
                     className="mb-3"
                 ),
 
+                # Gráfico de Série Temporal
                 dbc.Row(
                     dbc.Col(
                         dcc.Graph(id='serie-temporal'),
@@ -258,6 +261,7 @@ def criar_layout():
                     className="mb-4"
                 ),
 
+                # Gráficos Sazonal e Anual
                 dbc.Row([
                     dbc.Col(
                         dcc.Graph(id='grafico-sazonal'),
@@ -269,14 +273,22 @@ def criar_layout():
                     )
                 ], className="mb-4"),
 
+                # Gráfico de Regressão à Média (ADICIONADO CORRETAMENTE)
                 dbc.Row(
                     dbc.Col(
-                        dcc.Graph(id='grafico-regressao'),
+                        dbc.Card([
+                            dbc.CardHeader("Análise de Tendência", className="fw-bold"),
+                            dbc.CardBody([
+                                dcc.Graph(id='grafico-regressao'),
+                                html.Div(id='regressao-stats', className="mt-3")
+                            ])
+                        ]),
                         width=12
                     ),
                     className="mb-4"
                 ),
 
+                # Estatísticas Resumidas
                 dbc.Row(
                     dbc.Col(
                         dbc.Card([
@@ -288,6 +300,7 @@ def criar_layout():
                     className="mb-4"
                 ),
 
+                # Tabela de Dados
                 dbc.Row(
                     dbc.Col(
                         dash_table.DataTable(
