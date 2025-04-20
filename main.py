@@ -4,13 +4,15 @@ from dash import Dash, dcc, html, Input, Output, callback
 import dash_bootstrap_components as dbc
 from datetime import datetime
 import os
+import pathlib
 
 # ========== CONFIGURAÇÃO INICIAL ==========
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.title = "Painel de Segurança Pública (2001-2023)"
+server = app.server  # ESSENCIAL para o Render
 
 
-# ========== FUNÇÃO DE CARREGAMENTO DE DADOS ==========
+# ========== FUNÇÃO DE CARREGAMENTO DE DADOS (ATUALIZADA) ==========
 def carregar_dados():
     try:
         meses_esperados = [
@@ -18,20 +20,19 @@ def carregar_dados():
             'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
         ]
 
-        file_path = "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
+        # Caminho absoluto robusto (MUDANÇA CRÍTICA)
+        file_path = pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
 
-        if not os.path.exists(file_path):
-            print(f"\nERRO: Arquivo não encontrado: {file_path}")
+        print(f"\nTentando carregar arquivo em: {file_path}")  # Debug
+
+        if not file_path.exists():
+            print(
+                f"ERRO: Arquivo não encontrado. Arquivos disponíveis: {[f.name for f in pathlib.Path(__file__).parent.iterdir()]}")
             return None
 
-        print(f"\nArquivo encontrado: {file_path}")
-
-        try:
-            xl = pd.ExcelFile(file_path)
-            print(f"Planilhas disponíveis: {xl.sheet_names}")
-        except Exception as e:
-            print(f"\nERRO AO ABRIR ARQUIVO: {str(e)}")
-            return None
+        # Engine explícita (MUDANÇA IMPORTANTE)
+        xl = pd.ExcelFile(file_path, engine='openpyxl')
+        print(f"Planilhas disponíveis: {xl.sheet_names}")
 
         dfs = []
         anos_com_erro = []
@@ -44,12 +45,13 @@ def carregar_dados():
                 continue
 
             try:
-                # Lê a planilha inteira como texto para evitar interpretação automática
+                # Leitura robusta (MUDANÇA RECOMENDADA)
                 df = pd.read_excel(
                     file_path,
                     sheet_name=sheet_name,
                     header=None,
-                    dtype=str
+                    dtype=str,
+                    engine='openpyxl'
                 )
 
                 # Remove linhas completamente vazias
@@ -61,7 +63,7 @@ def carregar_dados():
                     continue
 
                 # Encontra a linha que contém "Natureza" (cabeçalho)
-                natureza_idx = df[df[0].str.contains('Natureza', na=False)].index[0]
+                natureza_idx = df[df[0].str.contains('Natureza', na=False, case=False)].index[0]
 
                 # Define o cabeçalho
                 df.columns = df.iloc[natureza_idx]
@@ -76,19 +78,19 @@ def carregar_dados():
                 # Remove linhas onde Natureza está vazia
                 df = df[df['Natureza'].notna()]
 
-                # Pega apenas as colunas de meses (assumindo que são as 12 colunas após Natureza)
+                # Pega apenas as colunas de meses
                 meses_df = df.iloc[:, 1:13].copy()
                 meses_df.columns = meses_esperados
 
                 # Combina com a coluna Natureza
                 df_final = pd.concat([df['Natureza'], meses_df], axis=1)
 
-                # Converte valores para numérico
+                # Converte valores para numérico (MELHORIA)
                 for mes in meses_esperados:
                     df_final[mes] = pd.to_numeric(
                         df_final[mes].astype(str)
-                        .str.replace('.', '', regex=False)
-                        .str.replace(',', '.', regex=False),
+                        .str.replace(r'[^\d,]', '', regex=True)  # Limpeza
+                        .str.replace(',', '.'),
                         errors='coerce'
                     )
 
@@ -349,7 +351,6 @@ app.layout = criar_layout()
 configurar_callbacks()
 
 # ========== EXECUÇÃO ==========
-server = app.server
 if __name__ == '__main__':
     print("\nVerificando estrutura de dados...")
     dados = carregar_dados()
