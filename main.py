@@ -1,115 +1,124 @@
 import pandas as pd
 import plotly.express as px
-from dash import Dash, dcc, html, Input, Output, callback
+from dash import Dash, dcc, html, Input, Output, callback, no_update, dash_table
 import dash_bootstrap_components as dbc
 from datetime import datetime
 import os
 import pathlib
+from scipy import stats
+import time
+from dash.dependencies import State, ALL
+import logging
+from flask_caching import Cache
 
 # ========== CONFIGURAÇÃO INICIAL ==========
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app = Dash(__name__,
+           external_stylesheets=[dbc.themes.BOOTSTRAP],
+           meta_tags=[{'name': 'viewport', 'content': 'width=device-width, initial-scale=1.0'}])
 app.title = "Painel de Segurança Pública (2001-2023)"
-server = app.server  # ESSENCIAL para o Render
+server = app.server
+
+# Configuração de cache
+cache = Cache(app.server, config={
+    'CACHE_TYPE': 'SimpleCache',
+    'CACHE_DEFAULT_TIMEOUT': 3600  # 1 hora
+})
+
+# Configuração de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-# ========== FUNÇÃO DE CARREGAMENTO DE DADOS (ATUALIZADA) ==========
+# ========== FUNÇÕES AUXILIARES ==========
+@cache.memoize(timeout=3600)
 def carregar_dados():
+    """Carrega e processa os dados do arquivo Excel com tratamento robusto de erros.
+
+    Returns:
+        DataFrame: Dados consolidados ou None em caso de falha crítica
+    """
     try:
+        start_time = time.time()
         meses_esperados = [
             'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
             'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
         ]
 
-        # Caminho absoluto robusto (MUDANÇA CRÍTICA)
         file_path = pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
 
-        print(f"\nTentando carregar arquivo em: {file_path}")  # Debug
-
         if not file_path.exists():
-            print(
-                f"ERRO: Arquivo não encontrado. Arquivos disponíveis: {[f.name for f in pathlib.Path(__file__).parent.iterdir()]}")
+            available_files = [f.name for f in pathlib.Path(__file__).parent.iterdir()]
+            logger.error(f"Arquivo não encontrado. Arquivos disponíveis: {available_files}")
             return None
 
-        # Engine explícita (MUDANÇA IMPORTANTE)
+        logger.info(f"Carregando arquivo: {file_path}")
         xl = pd.ExcelFile(file_path, engine='openpyxl')
-        print(f"Planilhas disponíveis: {xl.sheet_names}")
-
         dfs = []
         anos_com_erro = []
 
         for ano in range(2001, 2024):
             sheet_name = str(ano)
             if sheet_name not in xl.sheet_names:
-                print(f"Planilha {ano} não encontrada no arquivo")
                 anos_com_erro.append(ano)
                 continue
 
             try:
-                # Leitura robusta (MUDANÇA RECOMENDADA)
                 df = pd.read_excel(
-                    file_path,
+                    xl,
                     sheet_name=sheet_name,
                     header=None,
                     dtype=str,
                     engine='openpyxl'
-                )
-
-                # Remove linhas completamente vazias
-                df = df.dropna(how='all')
+                ).dropna(how='all')
 
                 if df.empty:
-                    print(f"Planilha {ano} está vazia")
                     anos_com_erro.append(ano)
                     continue
 
-                # Encontra a linha que contém "Natureza" (cabeçalho)
-                natureza_idx = df[df[0].str.contains('Natureza', na=False, case=False)].index[0]
+                # Encontra o cabeçalho
+                mask = df[0].str.contains('Natureza', na=False, case=False)
+                if not mask.any():
+                    logger.warning(f"Cabeçalho não encontrado na planilha {ano}")
+                    anos_com_erro.append(ano)
+                    continue
 
-                # Define o cabeçalho
+                natureza_idx = mask.idxmax()
                 df.columns = df.iloc[natureza_idx]
-                df = df.iloc[natureza_idx + 1:]  # Remove a linha de cabeçalho
+                df = df.iloc[natureza_idx + 1:].dropna(how='all', axis=1)
 
-                # Remove colunas vazias
-                df = df.dropna(axis=1, how='all')
-
-                # Renomeia colunas
-                df = df.rename(columns={'Natureza': 'Natureza'})
-
-                # Remove linhas onde Natureza está vazia
-                df = df[df['Natureza'].notna()]
-
-                # Pega apenas as colunas de meses
+                # Processa os meses
                 meses_df = df.iloc[:, 1:13].copy()
                 meses_df.columns = meses_esperados
+                df_final = pd.concat([
+                    df['Natureza'].str.strip(),
+                    meses_df
+                ], axis=1)
 
-                # Combina com a coluna Natureza
-                df_final = pd.concat([df['Natureza'], meses_df], axis=1)
-
-                # Converte valores para numérico (MELHORIA)
+                # Converte valores numéricos
                 for mes in meses_esperados:
-                    df_final[mes] = pd.to_numeric(
-                        df_final[mes].astype(str)
-                        .str.replace(r'[^\d,]', '', regex=True)  # Limpeza
-                        .str.replace(',', '.'),
-                        errors='coerce'
+                    df_final[mes] = (
+                        df_final[mes]
+                        .astype(str)
+                        .str.replace(r'[^\d,]', '', regex=True)
+                        .str.replace(',', '.')
+                        .pipe(pd.to_numeric, errors='coerce')
                     )
 
-                # Adiciona coluna de ano
                 df_final['Ano'] = ano
                 dfs.append(df_final)
 
             except Exception as e:
-                print(f"Erro ao processar ano {ano}: {str(e)}")
+                logger.error(f"Erro no ano {ano}: {str(e)}", exc_info=True)
                 anos_com_erro.append(ano)
                 continue
 
         if not dfs:
             raise ValueError("Nenhuma planilha válida foi carregada")
 
-        # Consolida todos os DataFrames
-        df_completo = pd.concat(dfs, ignore_index=True)
+        # Consolidação final
+        df_completo = pd.concat(dfs, ignore_index=True).convert_dtypes()
 
-        # Transforma para formato longo
+        # Transformação para formato longo
         df_long = df_completo.melt(
             id_vars=['Ano', 'Natureza'],
             value_vars=meses_esperados,
@@ -117,168 +126,274 @@ def carregar_dados():
             value_name='Ocorrências'
         ).dropna()
 
-        # Cria coluna de data completa
+        # Criação de datas
         mes_para_num = {mes: i + 1 for i, mes in enumerate(meses_esperados)}
-        df_long['Mes_Num'] = df_long['Mês'].map(mes_para_num)
         df_long['Data'] = pd.to_datetime(
             df_long['Ano'].astype(str) + '-' +
-            df_long['Mes_Num'].astype(str) + '-01'
+            df_long['Mês'].map(mes_para_num).astype(str) + '-01'
         )
 
-        # Remove espaços extras nos nomes dos crimes
-        df_long['Natureza'] = df_long['Natureza'].str.strip()
-
-        # Ordena por data
-        df_long = df_long.sort_values('Data')
-
-        print(f"\nDados carregados com sucesso para os anos: {sorted(set(df_long['Ano']))}")
-        if anos_com_erro:
-            print(f"Anos com problemas: {sorted(anos_com_erro)}")
-
-        return df_long
+        logger.info(f"Dados carregados em {time.time() - start_time:.2f} segundos")
+        logger.info(f"Anos com problemas: {anos_com_erro}")
+        return df_long.sort_values('Data')
 
     except Exception as e:
-        print(f"\nERRO CRÍTICO AO CARREGAR DADOS: {str(e)}")
+        logger.critical(f"ERRO CRÍTICO: {str(e)}", exc_info=True)
         return None
+
+
+def calcular_regressao_media(df, crime_selecionado):
+    """Calcula a regressão linear e média móvel para um crime específico.
+
+    Args:
+        df (DataFrame): DataFrame com os dados de criminalidade
+        crime_selecionado (str): Nome do crime para análise
+
+    Returns:
+        dict: Dicionário com resultados da análise ou None se não houver dados suficientes
+    """
+    dados = df[df['Natureza'] == crime_selecionado]
+    dados_anuais = dados.groupby('Ano')['Ocorrências'].sum().reset_index()
+
+    x = dados_anuais['Ano'].values
+    y = dados_anuais['Ocorrências'].values
+
+    if len(x) < 2:
+        return None
+
+    slope, intercept, r_value, _, _ = stats.linregress(x, y)
+    linha_regressao = intercept + slope * x
+    media_movel = pd.Series(y).rolling(window=3, center=True, min_periods=1).mean().values
+
+    return {
+        'Anos': x,
+        'Ocorrências': y,
+        'Regressão': linha_regressao,
+        'Média Móvel': media_movel,
+        'Coeficiente': slope,
+        'Intercepto': intercept,
+        'R²': r_value ** 2
+    }
+
+
+def criar_card_estatistica(titulo, valor, cor="primary"):
+    """Cria um componente de card para estatísticas."""
+    return dbc.Card(
+        dbc.CardBody([
+            html.H6(titulo, className="card-subtitle"),
+            html.P(valor, className=f"card-text text-{cor} fw-bold")
+        ]),
+        className="text-center shadow-sm mb-3"
+    )
 
 
 # ========== LAYOUT DO PAINEL ==========
 def criar_layout():
     return dbc.Container([
-        dbc.Row([
-            dbc.Col(html.H1(
-                "Análise de Criminalidade (2001-2023)",
-                className="text-center my-4",
-                style={'color': '#2c3e50', 'font-weight': 'bold'}
-            ), width=12)
-        ]),
-        dbc.Row([
-            dbc.Col([
-                html.Div([
-                    html.Label(
-                        "Selecione o Tipo de Crime:",
-                        style={'font-weight': 'bold', 'margin-bottom': '5px'}
+        dcc.Store(id='dados-store'),
+        dcc.Interval(id='interval-trigger', interval=1000, max_intervals=1),  # Dispara o carregamento inicial
+        dcc.Download(id="download-data"),
+
+        dcc.Loading(
+            id="loading",
+            type="circle",
+            children=[
+                dbc.Row([
+                    dbc.Col(html.H1("Painel de Criminalidade", className="text-center my-4"), width=12),
+                    dbc.Col([
+                        dbc.Alert(
+                            "Carregando dados...",
+                            id="loading-message",
+                            color="info",
+                            dismissable=True,
+                            is_open=False
+                        )
+                    ], width=12)
+                ]),
+
+                dbc.Row([
+                    dbc.Col([
+                        html.Label("Selecione o Tipo de Crime:", className="fw-bold mb-2"),
+                        dcc.Dropdown(
+                            id='crime-dropdown',
+                            placeholder="Selecione um crime...",
+                            disabled=True
+                        )
+                    ], md=6),
+
+                    dbc.Col([
+                        html.Label("Selecione o Período:", className="fw-bold mb-2"),
+                        dcc.RangeSlider(
+                            id='ano-slider',
+                            min=2001,
+                            max=2023,
+                            value=[2018, 2023],
+                            marks={str(ano): {'label': str(ano)} for ano in range(2001, 2024, 2)},
+                            step=1,
+                            disabled=True,
+                            tooltip={"placement": "bottom", "always_visible": True}
+                        )
+                    ], md=6)
+                ], className="mb-4"),
+
+                dbc.Row(
+                    dbc.Col(
+                        dbc.Button(
+                            "Exportar Dados Filtrados",
+                            id="btn-export",
+                            color="secondary",
+                            className="me-2",
+                            disabled=True
+                        ),
+                        width=12
                     ),
-                    dcc.Dropdown(
-                        id='crime-dropdown',
-                        placeholder="Selecione um crime...",
-                        style={'margin-bottom': '20px'}
-                    )
-                ])
-            ], md=6),
-            dbc.Col([
-                html.Div([
-                    html.Label(
-                        "Selecione o Período:",
-                        style={'font-weight': 'bold', 'margin-bottom': '5px'}
-                    ),
-                    dcc.RangeSlider(
-                        id='ano-slider',
-                        min=2001,
-                        max=2023,
-                        value=[2018, 2023],
-                        marks={str(ano): {'label': str(ano), 'style': {'transform': 'rotate(45deg)'}}
-                               for ano in range(2001, 2024, 2)},
-                        step=1,
-                        tooltip={'placement': 'bottom', 'always_visible': True},
-                        allowCross=False
-                    )
-                ])
-            ], md=6)
-        ], className="mb-4"),
-        dbc.Row([
-            dbc.Col(dcc.Graph(id='serie-temporal'), width=12)
-        ], className="mb-4"),
-        dbc.Row([
-            dbc.Col(dcc.Graph(id='grafico-sazonal'), width=6),
-            dbc.Col(dcc.Graph(id='grafico-anual'), width=6)
-        ], className="mb-4"),
-        dbc.Row([
-            dbc.Col(
-                dbc.Card([
-                    dbc.CardHeader("Estatísticas do Período", className="font-weight-bold"),
-                    dbc.CardBody(id='estatisticas-resumo')
-                ], color="light"),
-                width=12,
-                className="mb-4"
-            )
-        ]),
-        dbc.Row([
-            dbc.Col(
-                html.Div(
-                    f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
-                    "Fonte: Dados de Segurança Pública",
-                    className="text-center text-muted small"
+                    className="mb-3"
                 ),
-                width=12
-            )
-        ])
-    ], fluid=True)
 
+                dbc.Row(
+                    dbc.Col(
+                        dcc.Graph(id='serie-temporal'),
+                        width=12
+                    ),
+                    className="mb-4"
+                ),
 
-# ========== CALLBACKS ==========
+                dbc.Row([
+                    dbc.Col(
+                        dcc.Graph(id='grafico-sazonal'),
+                        width=6
+                    ),
+                    dbc.Col(
+                        dcc.Graph(id='grafico-anual'),
+                        width=6
+                    )
+                ], className="mb-4"),
+
+                dbc.Row(
+                    dbc.Col(
+                        dcc.Graph(id='grafico-regressao'),
+                        width=12
+                    ),
+                    className="mb-4"
+                ),
+
+                dbc.Row(
+                    dbc.Col(
+                        dbc.Card([
+                            dbc.CardHeader("Análise Estatística", className="fw-bold"),
+                            dbc.CardBody(id='estatisticas-resumo')
+                        ]),
+                        width=12
+                    ),
+                    className="mb-4"
+                ),
+
+                dbc.Row(
+                    dbc.Col(
+                        dash_table.DataTable(
+                            id='tabela-dados',
+                            page_size=10,
+                            style_table={'overflowX': 'auto'},
+                            style_cell={
+                                'textAlign': 'left',
+                                'padding': '8px',
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
+                            },
+                            style_header={
+                                'backgroundColor': 'rgb(230, 230, 230)',
+                                'fontWeight': 'bold'
+                            }
+                        ),
+                        width=12
+                    ),
+                    className="mb-4"
+                )
+            ]
+        )
+    ], fluid=True, className="py-4")
+
 def configurar_callbacks():
     @app.callback(
-        Output('crime-dropdown', 'options'),
-        Input('ano-slider', 'value')
+        [Output('dados-store', 'data'),
+         Output('loading-message', 'is_open'),
+         Output('crime-dropdown', 'disabled'),
+         Output('ano-slider', 'disabled'),
+         Output('btn-export', 'disabled')],
+        Input('interval-trigger', 'n_intervals'),
+        prevent_initial_call=False
     )
-    def atualizar_dropdown(anos_selecionados):
-        df = carregar_dados()
-        if df is None:
+    def carregar_e_habilitar(_):
+        """Carrega os dados e habilita os controles do painel."""
+        dados = carregar_dados()
+        if dados is None:
+            return no_update, True, True, True, True
+
+        return dados.to_dict('records'), False, False, False, False
+
+    @app.callback(
+        Output('crime-dropdown', 'options'),
+        Input('dados-store', 'data'),
+        State('ano-slider', 'value')
+    )
+    def atualizar_dropdown(dados, anos_selecionados):
+        """Atualiza as opções do dropdown de crimes com base nos anos selecionados."""
+        if dados is None:
             return []
+
+        df = pd.DataFrame.from_records(dados)
         crimes = df[df['Ano'].between(anos_selecionados[0], anos_selecionados[1])]['Natureza'].unique()
         return [{'label': crime, 'value': crime} for crime in sorted(crimes)]
 
     @app.callback(
-        Output('serie-temporal', 'figure'),
-        Output('grafico-sazonal', 'figure'),
-        Output('grafico-anual', 'figure'),
-        Output('estatisticas-resumo', 'children'),
-        Input('crime-dropdown', 'value'),
-        Input('ano-slider', 'value')
+        [Output('serie-temporal', 'figure'),
+         Output('grafico-sazonal', 'figure'),
+         Output('grafico-anual', 'figure'),
+         Output('grafico-regressao', 'figure'),
+         Output('estatisticas-resumo', 'children'),
+         Output('tabela-dados', 'data'),
+         Output('tabela-dados', 'columns')],
+        [Input('crime-dropdown', 'value'),
+         Input('ano-slider', 'value')],
+        State('dados-store', 'data')
     )
-    def atualizar_graficos(selected_crime, selected_years):
-        if selected_crime is None:
-            empty_fig = px.scatter(title="Selecione um tipo de crime")
-            empty_fig.update_layout(plot_bgcolor='white')
-            return empty_fig, empty_fig, empty_fig, "Selecione um tipo de crime"
+    def atualizar_graficos(selected_crime, selected_years, dados):
+        """Atualiza todos os gráficos e estatísticas com base nos filtros selecionados."""
+        if dados is None or not selected_crime or not selected_years:
+            empty = px.scatter(title="Selecione um tipo de crime e período")
+            empty.update_layout(template='plotly_white')
 
-        df = carregar_dados()
-        if df is None:
-            error_fig = px.scatter(title="Erro ao carregar dados")
-            error_fig.update_layout(plot_bgcolor='white')
-            return error_fig, error_fig, error_fig, "Erro ao carregar dados"
+            columns = [{'name': col, 'id': col} for col in ['Ano', 'Mês', 'Ocorrências']]
+            return empty, empty, empty, empty, "Selecione um tipo de crime", [], columns
 
-        filtered = df[
-            (df['Natureza'] == selected_crime) &
-            (df['Ano'].between(selected_years[0], selected_years[1]))
-            ]
+        df = pd.DataFrame.from_records(dados)
+        filtered = df[(df['Natureza'] == selected_crime) &
+                      (df['Ano'].between(selected_years[0], selected_years[1]))]
 
         if filtered.empty:
-            empty_fig = px.scatter(title="Nenhum dado encontrado")
-            empty_fig.update_layout(plot_bgcolor='white')
-            return empty_fig, empty_fig, empty_fig, "Nenhum dado encontrado para os filtros selecionados"
+            empty = px.scatter(title="Nenhum dado encontrado")
+            empty.update_layout(template='plotly_white')
 
+            columns = [{'name': col, 'id': col} for col in ['Ano', 'Mês', 'Ocorrências']]
+            return empty, empty, empty, empty, "Nenhum dado encontrado", [], columns
+
+        # 1. Gráfico de Série Temporal
         fig_serie = px.line(
             filtered,
             x='Data',
             y='Ocorrências',
             title=f'Série Temporal: {selected_crime}',
-            labels={'Ocorrências': 'Número de Ocorrências', 'Data': ''},
+            labels={'Ocorrências': 'Número de Ocorrências'},
             template='plotly_white'
         )
         fig_serie.update_traces(line=dict(width=2.5))
-        fig_serie.update_layout(hovermode='x unified')
-
-        filtered['Media_Movel'] = filtered['Ocorrências'].rolling(window=3, min_periods=1).mean()
-        fig_serie.add_scatter(
-            x=filtered['Data'],
-            y=filtered['Media_Movel'],
-            mode='lines',
-            name='Média Móvel (3 meses)',
-            line=dict(color='orange', width=2)
+        fig_serie.update_layout(
+            hovermode='x unified',
+            xaxis_rangeslider_visible=True,
+            hoverlabel=dict(bgcolor="white", font_size=12)
         )
 
+        # 2. Gráfico Sazonal
         sazonal = filtered.groupby('Mês', as_index=False)['Ocorrências'].mean()
         fig_sazonal = px.bar(
             sazonal,
@@ -291,6 +406,7 @@ def configurar_callbacks():
         )
         fig_sazonal.update_layout(coloraxis_showscale=False)
 
+        # 3. Gráfico Anual
         anual = filtered.groupby('Ano', as_index=False)['Ocorrências'].sum()
         fig_anual = px.bar(
             anual,
@@ -305,61 +421,127 @@ def configurar_callbacks():
             textposition='outside',
             marker_color='#3498db'
         )
-        fig_anual.update_layout(uniformtext_minsize=8)
 
+        # 4. Gráfico de Regressão
+        regressao = calcular_regressao_media(filtered, selected_crime)
+        if regressao:
+            fig_regressao = px.scatter(
+                x=regressao['Anos'],
+                y=regressao['Ocorrências'],
+                title=f'Regressão à Média (R²={regressao["R²"]:.2f})',
+                labels={'x': 'Ano', 'y': 'Ocorrências'},
+                template='plotly_white'
+            )
+            fig_regressao.add_scatter(
+                x=regressao['Anos'],
+                y=regressao['Regressão'],
+                mode='lines',
+                name='Tendência Linear',
+                line=dict(color='red', width=3)
+            )
+            fig_regressao.add_scatter(
+                x=regressao['Anos'],
+                y=regressao['Média Móvel'],
+                mode='lines',
+                name='Média Móvel (3 anos)',
+                line=dict(color='green', width=2, dash='dot')
+            )
+        else:
+            fig_regressao = px.scatter(
+                title="Dados insuficientes para regressão",
+                template='plotly_white'
+            )
+
+        # 5. Estatísticas
         stats = filtered.groupby('Ano')['Ocorrências'].sum().describe()
-        ano_max = anual.loc[anual['Ocorrências'].idxmax(), 'Ano']
-        ano_min = anual.loc[anual['Ocorrências'].idxmin(), 'Ano']
+        tem_tendencia = regressao and regressao['Coeficiente'] > 0 if regressao else False
 
         stats_html = [
-            html.H5(f"Análise: {selected_crime}", className="card-title"),
-            html.P(f"Período: {selected_years[0]} a {selected_years[1]}", className="card-text"),
-            html.Hr(),
+            html.H4(selected_crime, className="card-title mb-3"),
             dbc.Row([
-                dbc.Col([
-                    html.Div([
-                        html.H6("Total", className="stat-title"),
-                        html.P(f"{filtered['Ocorrências'].sum():,.0f}", className="stat-value")
-                    ], className="stat-card")
-                ], md=3),
-                dbc.Col([
-                    html.Div([
-                        html.H6("Média Anual", className="stat-title"),
-                        html.P(f"{stats['mean']:,.0f}", className="stat-value")
-                    ], className="stat-card")
-                ], md=3),
-                dbc.Col([
-                    html.Div([
-                        html.H6("Ano com Mais Casos", className="stat-title"),
-                        html.P(f"{ano_max} ({stats['max']:,.0f})", className="stat-value")
-                    ], className="stat-card")
-                ], md=3),
-                dbc.Col([
-                    html.Div([
-                        html.H6("Ano com Menos Casos", className="stat-title"),
-                        html.P(f"{ano_min} ({stats['min']:,.0f})", className="stat-value")
-                    ], className="stat-card")
-                ], md=3)
+                dbc.Col(criar_card_estatistica(
+                    "Total de Ocorrências",
+                    f"{filtered['Ocorrências'].sum():,.0f}",
+                    "primary"
+                ), md=3),
+
+                dbc.Col(criar_card_estatistica(
+                    "Média Anual",
+                    f"{stats['mean']:,.0f}",
+                    "info"
+                ), md=3),
+
+                dbc.Col(criar_card_estatistica(
+                    "Tendência Anual",
+                    f"{'↑' if tem_tendencia else '↓'} {abs(regressao['Coeficiente']):.1f} casos/ano" if regressao else "N/A",
+                    "success" if tem_tendencia else "danger"
+                ), md=3),
+
+                dbc.Col(criar_card_estatistica(
+                    "Qualidade do Ajuste (R²)",
+                    f"{regressao['R²']:.2f}" if regressao else "N/A",
+                    "warning"
+                ), md=3)
+            ]),
+
+            html.Hr(),
+
+            dbc.Row([
+                dbc.Col(criar_card_estatistica(
+                    "Mês com Mais Ocorrências",
+                    sazonal.loc[sazonal['Ocorrências'].idxmax(), 'Mês'],
+                    "danger"
+                ), md=4),
+
+                dbc.Col(criar_card_estatistica(
+                    "Mês com Menos Ocorrências",
+                    sazonal.loc[sazonal['Ocorrências'].idxmin(), 'Mês'],
+                    "success"
+                ), md=4),
+
+                dbc.Col(criar_card_estatistica(
+                    "Ano com Mais Ocorrências",
+                    str(anual.loc[anual['Ocorrências'].idxmax(), 'Ano']),
+                    "danger"
+                ), md=4)
             ])
         ]
 
-        return fig_serie, fig_sazonal, fig_anual, stats_html
+        # 6. Tabela de dados
+        tabela_data = filtered[['Ano', 'Mês', 'Ocorrências']].to_dict('records')
+        tabela_columns = [{'name': col, 'id': col} for col in ['Ano', 'Mês', 'Ocorrências']]
+
+        return fig_serie, fig_sazonal, fig_anual, fig_regressao, stats_html, tabela_data, tabela_columns
+
+    @app.callback(
+        Output("download-data", "data"),
+        Input("btn-export", "n_clicks"),
+        [State('crime-dropdown', 'value'),
+         State('ano-slider', 'value'),
+         State('dados-store', 'data')],
+        prevent_initial_call=True
+    )
+    def exportar_dados(n_clicks, crime, anos, dados):
+        """Exporta os dados filtrados para um arquivo CSV."""
+        if n_clicks is None or not crime or not dados:
+            return no_update
+
+        df = pd.DataFrame.from_records(dados)
+        filtered = df[(df['Natureza'] == crime) &
+                      (df['Ano'].between(anos[0], anos[1]))]
+
+        if filtered.empty:
+            return no_update
+
+        return {
+            'content': filtered.to_csv(index=False),
+            'filename': f"dados_criminalidade_{crime}_{anos[0]}-{anos[1]}.csv"
+        }
 
 
 # ========== CONFIGURAÇÃO FINAL ==========
 app.layout = criar_layout()
 configurar_callbacks()
 
-# ========== EXECUÇÃO ==========
 if __name__ == '__main__':
-    print("\nVerificando estrutura de dados...")
-    dados = carregar_dados()
-    if dados is not None:
-        print("\nVisualização dos primeiros registros:")
-        print(dados.head())
-        print("\nInformações do DataFrame:")
-        print(dados.info())
-        print("\nTipos de crimes disponíveis:")
-        print(dados['Natureza'].unique())
-
-    app.run(debug=True, port=8050)
+    app.run(debug=True)
