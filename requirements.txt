@@ -6,3 +6,5 @@ gunicorn==21.2.0
 scipy==1.13.0
 numpy==1.26.4
 statsmodels==0.14.1
+flask_caching==2.1.0
+flask==2.3.2
