@@ -35,7 +35,7 @@ def verificar_arquivo():
     caminhos_tentados = [
         pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx",
         pathlib.Path("Dados Segurança Publica 2001 a 2023 consolidado.xlsx"),
-        pathlib.Path("app") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
+        pathlib.Path("pages.main") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
     ]
 
     for caminho in caminhos_tentados:
@@ -570,7 +570,7 @@ if file_path is None:
         html.Ul([
             html.Li(str(pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx")),
             html.Li(str(pathlib.Path("Dados Segurança Publica 2001 a 2023 consolidado.xlsx"))),
-            html.Li(str(pathlib.Path("app") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"))
+            html.Li(str(pathlib.Path("pages.main") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"))
         ]),
         html.P("Arquivos encontrados no diretório:"),
         html.Ul([html.Li(f.name) for f in pathlib.Path(__file__).parent.iterdir()])

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: your-app-name
+    name: your-pages.main-name
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn main:app.server --workers 4 --timeout 120
+    startCommand: gunicorn main:pages.main.server --workers 4 --timeout 120
