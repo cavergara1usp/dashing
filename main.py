@@ -29,28 +29,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ========== VERIFICAÇÃO INICIAL DO ARQUIVO ==========
-def verificar_arquivo():
-    """Verifica se o arquivo de dados existe em locais possíveis."""
-    caminhos_tentados = [
-        pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx",
-        pathlib.Path("Dados Segurança Publica 2001 a 2023 consolidado.xlsx"),
-        pathlib.Path("pages.main") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
-    ]
-
-    for caminho in caminhos_tentados:
-        if caminho.exists():
-            logger.info(f"Arquivo encontrado em: {caminho.resolve()}")
-            return caminho
-
-    logger.error("Arquivo não encontrado em nenhum dos caminhos tentados")
-    return None
-
-
 # ========== FUNÇÕES AUXILIARES ==========
 @cache.memoize(timeout=3600)
 def carregar_dados():
-    """Carrega e processa os dados do arquivo Excel com tratamento robusto de erros."""
+    """Carrega e processa os dados do arquivo Excel com tratamento robusto de erros.
+
+    Returns:
+        DataFrame: Dados consolidados ou None em caso de falha crítica
+    """
     try:
         start_time = time.time()
         meses_esperados = [
@@ -58,9 +44,9 @@ def carregar_dados():
             'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
         ]
 
-        # Verifica o arquivo em vários locais possíveis
-        file_path = verificar_arquivo()
-        if file_path is None:
+        file_path = pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
+
+        if not file_path.exists():
             available_files = [f.name for f in pathlib.Path(__file__).parent.iterdir()]
             logger.error(f"Arquivo não encontrado. Arquivos disponíveis: {available_files}")
             return None
@@ -157,7 +143,15 @@ def carregar_dados():
 
 
 def calcular_regressao_media(df, crime_selecionado):
-    """Calcula a regressão linear e média móvel para um crime específico."""
+    """Calcula a regressão linear e média móvel para um crime específico.
+
+    Args:
+        df (DataFrame): DataFrame com os dados de criminalidade
+        crime_selecionado (str): Nome do crime para análise
+
+    Returns:
+        dict: Dicionário com resultados da análise ou None se não houver dados suficientes
+    """
     dados = df[df['Natureza'] == crime_selecionado]
     dados_anuais = dados.groupby('Ano')['Ocorrências'].sum().reset_index()
 
@@ -279,7 +273,7 @@ def criar_layout():
                     )
                 ], className="mb-4"),
 
-                # Gráfico de Regressão à Média
+                # Gráfico de Regressão à Média (ADICIONADO CORRETAMENTE)
                 dbc.Row(
                     dbc.Col(
                         dbc.Card([
@@ -331,7 +325,6 @@ def criar_layout():
             ]
         )
     ], fluid=True, className="py-4")
-
 
 def configurar_callbacks():
     @app.callback(
@@ -560,24 +553,9 @@ def configurar_callbacks():
 
 
 # ========== CONFIGURAÇÃO FINAL ==========
-# Verifica se o arquivo existe antes de configurar o layout
-file_path = verificar_arquivo()
-if file_path is None:
-    app.layout = html.Div([
-        html.H1("Erro de Configuração", className="text-danger"),
-        html.P("O arquivo de dados não foi encontrado. Por favor, verifique se o arquivo está no diretório correto."),
-        html.P("Caminhos verificados:"),
-        html.Ul([
-            html.Li(str(pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx")),
-            html.Li(str(pathlib.Path("Dados Segurança Publica 2001 a 2023 consolidado.xlsx"))),
-            html.Li(str(pathlib.Path("pages.main") / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"))
-        ]),
-        html.P("Arquivos encontrados no diretório:"),
-        html.Ul([html.Li(f.name) for f in pathlib.Path(__file__).parent.iterdir()])
-    ])
-else:
-    app.layout = criar_layout()
-    configurar_callbacks()
+app.layout = criar_layout()
+configurar_callbacks()
 
 if __name__ == '__main__':
+    #app.run(debug=True)
     app.run(host='0.0.0.0', port=8080, debug=False)
