@@ -49,6 +49,7 @@ def carregar_dados():
         if not file_path.exists():
             available_files = [f.name for f in pathlib.Path(__file__).parent.iterdir()]
             logger.error(f"Arquivo não encontrado. Arquivos disponíveis: {available_files}")
+            print(f"Procurando o arquivo em: {file_path}")
             return None
 
         logger.info(f"Carregando arquivo: {file_path}")
