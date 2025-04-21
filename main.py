@@ -45,6 +45,8 @@ def carregar_dados():
         ]
 
         file_path = pathlib.Path(__file__).parent / "Dados Segurança Publica 2001 a 2023 consolidado.xlsx"
+        print(f"Caminho absoluto do arquivo: {file_path.resolve()}")
+        print(f"Arquivo existe? {file_path.exists()}")
 
         if not file_path.exists():
             available_files = [f.name for f in pathlib.Path(__file__).parent.iterdir()]
